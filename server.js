@@ -1,4 +1,4 @@
-// server.js - Debug version to identify auth issues
+// server.js - Troubleshooting version with detailed auth diagnostics
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
@@ -11,38 +11,56 @@ const admin = require('firebase-admin');
 if (!admin.apps.length) {
     try {
         if (!process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
-            console.error("ERROR: Environment variable GOOGLE_APPLICATION_CREDENTIALS_JSON is missing!");
+            console.error("❌ Environment variable GOOGLE_APPLICATION_CREDENTIALS_JSON is missing!");
             process.exit(1);
         }
 
-        console.log("Parsing service account JSON...");
-        const serviceAccount = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+        console.log("🔍 Parsing service account JSON...");
+        const serviceAccountRaw = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
         
-        // Debug service account details (without sensitive info)
-        console.log("Service Account Debug Info:");
+        // Debug the raw environment variable (first 100 chars)
+        console.log("Raw env var preview:", serviceAccountRaw.substring(0, 100) + "...");
+        console.log("Raw env var length:", serviceAccountRaw.length);
+        
+        const serviceAccount = JSON.parse(serviceAccountRaw);
+        
+        // Enhanced debug info
+        console.log("📋 Service Account Analysis:");
         console.log("- Type:", serviceAccount.type);
         console.log("- Project ID:", serviceAccount.project_id);
         console.log("- Client Email:", serviceAccount.client_email);
         console.log("- Private Key ID:", serviceAccount.private_key_id);
-        console.log("- Private Key exists:", !!serviceAccount.private_key);
-        console.log("- Private Key starts with:", serviceAccount.private_key ? serviceAccount.private_key.substring(0, 50) + "..." : "MISSING");
+        console.log("- Client ID:", serviceAccount.client_id);
+        console.log("- Universe Domain:", serviceAccount.universe_domain || "NOT SET");
+        console.log("- Private Key Length:", serviceAccount.private_key ? serviceAccount.private_key.length : "MISSING");
+        console.log("- Private Key Format Check:", serviceAccount.private_key ? 
+            (serviceAccount.private_key.includes('BEGIN PRIVATE KEY') ? "✅ Valid" : "❌ Invalid") : "❌ Missing");
         
-        // Validate required fields
-        const requiredFields = ['type', 'project_id', 'private_key_id', 'private_key', 'client_email', 'client_id', 'auth_uri', 'token_uri'];
+        // Validate all required fields
+        const requiredFields = [
+            'type', 'project_id', 'private_key_id', 'private_key', 
+            'client_email', 'client_id', 'auth_uri', 'token_uri'
+        ];
         const missingFields = requiredFields.filter(field => !serviceAccount[field]);
         
         if (missingFields.length > 0) {
-            console.error("Missing required fields in service account:", missingFields);
+            console.error("❌ Missing required fields:", missingFields);
             process.exit(1);
+        } else {
+            console.log("✅ All required fields present");
         }
 
-        // Check if private key is properly formatted
-        if (!serviceAccount.private_key.includes('BEGIN PRIVATE KEY')) {
-            console.error("Private key appears to be malformed - missing BEGIN PRIVATE KEY header");
-            console.log("Private key preview:", serviceAccount.private_key.substring(0, 100));
+        // Check private key format more thoroughly
+        if (serviceAccount.private_key) {
+            const pkLines = serviceAccount.private_key.split('\n');
+            console.log("🔑 Private Key Analysis:");
+            console.log("- Line count:", pkLines.length);
+            console.log("- First line:", pkLines[0]);
+            console.log("- Last line:", pkLines[pkLines.length - 1]);
+            console.log("- Contains \\n chars:", serviceAccount.private_key.includes('\\n'));
         }
 
-        console.log("Initializing Firebase Admin...");
+        console.log("🚀 Initializing Firebase Admin...");
         admin.initializeApp({
             credential: admin.credential.cert(serviceAccount),
             projectId: serviceAccount.project_id
@@ -51,15 +69,17 @@ if (!admin.apps.length) {
         console.log("✅ Firebase Admin initialized successfully!");
 
     } catch (error) {
-        console.error("❌ Error initializing Firebase Admin:");
+        console.error("❌ Firebase Admin initialization failed:");
+        console.error("Error type:", error.constructor.name);
         console.error("Error message:", error.message);
         console.error("Error code:", error.code);
-        console.error("Full error:", error);
         
         if (error.message.includes('JSON')) {
-            console.error("This looks like a JSON parsing error. Check your GOOGLE_APPLICATION_CREDENTIALS_JSON format.");
+            console.error("🚨 JSON PARSING ERROR - Check your environment variable format");
+            console.error("First 200 chars of env var:", process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON?.substring(0, 200));
         }
         
+        console.error("Full error:", error);
         process.exit(1);
     }
 }
@@ -70,190 +90,211 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-// Enhanced test Firebase connection
+// Comprehensive Firebase connection test
 async function testFirebaseConnection() {
+    console.log("\n🧪 Starting comprehensive Firebase tests...");
+    
     try {
-        console.log("\n🔍 Testing Firebase connection...");
+        // Test 1: Basic Firestore instance
+        console.log("Test 1: Firestore instance check...");
+        console.log("✅ Firestore instance created");
+
+        // Test 2: Simple document write with explicit project
+        console.log("Test 2: Testing document write...");
+        const testCollection = db.collection('connection_tests');
+        const testDocRef = testCollection.doc('auth-test-' + Date.now());
         
-        // Test 1: Simple document write
-        console.log("Test 1: Creating test document...");
-        const testDocRef = db.collection('connection_tests').doc('test-' + Date.now());
         await testDocRef.set({
             test: true,
             timestamp: admin.firestore.FieldValue.serverTimestamp(),
-            message: "Connection test from server"
+            message: "Authentication test",
+            serverTime: new Date().toISOString()
         });
-        console.log("✅ Test 1 passed: Document created successfully");
+        console.log("✅ Document write successful");
 
-        // Test 2: Read the document back
-        console.log("Test 2: Reading test document...");
-        const doc = await testDocRef.get();
-        if (doc.exists) {
-            console.log("✅ Test 2 passed: Document read successfully");
-            console.log("Document data:", doc.data());
+        // Test 3: Read back the document
+        console.log("Test 3: Testing document read...");
+        const docSnapshot = await testDocRef.get();
+        if (docSnapshot.exists) {
+            console.log("✅ Document read successful");
+            console.log("Document data:", docSnapshot.data());
         } else {
-            console.log("❌ Test 2 failed: Document not found");
+            console.log("❌ Document read failed - not found");
         }
 
-        // Test 3: Delete the document
-        console.log("Test 3: Deleting test document...");
+        // Test 4: Update document
+        console.log("Test 4: Testing document update...");
+        await testDocRef.update({
+            updated: true,
+            updateTime: admin.firestore.FieldValue.serverTimestamp()
+        });
+        console.log("✅ Document update successful");
+
+        // Test 5: Delete document
+        console.log("Test 5: Testing document delete...");
         await testDocRef.delete();
-        console.log("✅ Test 3 passed: Document deleted successfully");
+        console.log("✅ Document delete successful");
 
-        // Test 4: List collections (to test read permissions)
-        console.log("Test 4: Testing collection access...");
-        const collections = await db.listCollections();
-        console.log("✅ Test 4 passed: Can access collections");
-        console.log("Available collections:", collections.map(col => col.id));
+        // Test 6: Check project access
+        console.log("Test 6: Testing project access...");
+        try {
+            const collections = await db.listCollections();
+            console.log("✅ Project access successful");
+            console.log("Available collections:", collections.map(c => c.id));
+        } catch (listError) {
+            console.log("⚠️  Collection listing failed (might be permission issue):", listError.message);
+        }
 
-        console.log("🎉 All Firebase connection tests passed!");
-        
+        console.log("🎉 ALL FIREBASE TESTS PASSED!");
+        return true;
+
     } catch (error) {
         console.error("❌ Firebase connection test failed:");
-        console.error("Error message:", error.message);
+        console.error("Error type:", error.constructor.name);
         console.error("Error code:", error.code);
-        console.error("Error details:", error.details);
+        console.error("Error message:", error.message);
         
-        // Specific error handling
-        if (error.code === 16) {
-            console.error("\n🚨 AUTHENTICATION ERROR DETECTED:");
-            console.error("This means your service account credentials are invalid or expired.");
-            console.error("Solutions:");
-            console.error("1. Generate a new service account key from Firebase Console");
-            console.error("2. Make sure the service account has Firestore permissions");
-            console.error("3. Check that the private key is not corrupted");
+        if (error.code === 16 || error.code === 'UNAUTHENTICATED') {
+            console.error("\n🚨 AUTHENTICATION FAILURE DETECTED!");
+            console.error("Possible causes:");
+            console.error("1. Service account key is invalid or corrupted");
+            console.error("2. Service account doesn't have Firestore permissions");
+            console.error("3. Project ID mismatch");
+            console.error("4. Private key format is incorrect");
+            console.error("5. Environment variable wasn't updated properly");
         }
         
-        if (error.message.includes('PERMISSION_DENIED')) {
-            console.error("\n🚨 PERMISSION ERROR DETECTED:");
-            console.error("Your service account doesn't have permission to access Firestore");
-            console.error("Solutions:");
-            console.error("1. Go to IAM & Admin in Google Cloud Console");
-            console.error("2. Find your service account and add 'Cloud Datastore User' role");
-            console.error("3. Or add 'Firebase Admin SDK Administrator Service Agent' role");
-        }
+        console.error("Full error details:", error);
+        return false;
     }
 }
 
-// PayHero callback endpoint - simplified for debugging
+// PayHero callback with enhanced error handling
 app.post('/payhero/callback', async (req, res) => {
     const data = req.body;
-    console.log('\n📥 Incoming PayHero Callback:', JSON.stringify(data, null, 2));
+    console.log('\n📥 PayHero Callback Received');
 
     try {
-        // Extract data
+        // Extract payment data
         const response = data.response || data;
-        const statusCode = response.ResultCode ?? data.ResultCode ?? data.resultCode;
-        const transCode = response.MpesaReceiptNumber ?? 'NO-CODE';
-        const amount = response.Amount ?? data.Amount ?? 0;
-        const phone = response.Phone ?? data.Phone ?? 'UNKNOWN';
-        const reference = response.ExternalReference ?? data.ExternalReference ?? `FALLBACK-${Date.now()}`;
-
-        console.log('📋 Extracted payment data:', {
-            statusCode, transCode, amount, phone, reference
-        });
-
-        // Create payment record
+        const reference = response.ExternalReference || `FALLBACK-${Date.now()}`;
+        
         const paymentRecord = {
-            transCode,
-            amount: parseFloat(amount),
-            phone,
-            status: statusCode === 0 ? 'success' : 'failed',
+            transCode: response.MpesaReceiptNumber || 'NO-CODE',
+            amount: parseFloat(response.Amount || 0),
+            phone: response.Phone || 'UNKNOWN',
+            status: response.ResultCode === 0 ? 'success' : 'failed',
             timestamp: admin.firestore.FieldValue.serverTimestamp(),
-            resultCode: statusCode,
-            resultDesc: response.ResultDesc || 'No description',
+            resultCode: response.ResultCode,
             rawCallback: data
         };
 
-        console.log(`💾 Saving to Firebase collection 'tests' with ID: ${reference}`);
+        console.log(`💾 Attempting Firebase save with ID: ${reference}`);
 
-        // Save to Firebase with detailed error handling
+        // Test Firebase auth before saving payment
         try {
-            await db.collection('tests').doc(reference).set(paymentRecord, { merge: true });
-            console.log(`✅ Payment saved successfully!`);
+            console.log("🔐 Testing auth with dummy write...");
+            await db.collection('auth_tests').doc('test').set({
+                test: true,
+                time: admin.firestore.FieldValue.serverTimestamp()
+            });
+            console.log("✅ Auth test passed, proceeding with payment save...");
             
-            // Verify save
-            const savedDoc = await db.collection('tests').doc(reference).get();
-            if (savedDoc.exists) {
-                console.log(`✅ Verification passed - document exists in Firebase`);
-            } else {
-                console.log(`❌ Verification failed - document not found after save`);
-            }
+            // Clean up test doc
+            await db.collection('auth_tests').doc('test').delete();
             
-        } catch (saveError) {
-            console.error(`❌ Firebase save error:`, saveError.message);
-            console.error('Error code:', saveError.code);
-            console.error('Error details:', saveError.details);
-            throw saveError;
+        } catch (authTestError) {
+            console.error("❌ Auth test failed:", authTestError.message);
+            throw authTestError;
         }
+
+        // Save payment record
+        await db.collection('tests').doc(reference).set(paymentRecord, { merge: true });
+        console.log(`✅ Payment saved successfully: ${reference}`);
 
         res.status(200).json({
             success: true,
-            message: 'Payment processed successfully',
-            documentId: reference,
-            status: statusCode === 0 ? 'success' : 'failed'
+            message: 'Payment processed',
+            documentId: reference
         });
 
     } catch (err) {
-        console.error("❌ Callback processing error:", err.message);
+        console.error("❌ Callback error:", err.message);
+        console.error("Error code:", err.code);
+        
         res.status(500).json({
             success: false,
-            message: 'Server error',
-            error: err.message
+            message: 'Processing failed',
+            error: err.message,
+            code: err.code
         });
     }
 });
 
-// Enhanced health check
+// Enhanced health check with auth test
 app.get('/health', async (req, res) => {
-    console.log('\n🏥 Health check requested...');
+    console.log('\n🏥 Health Check Started');
     
     try {
-        // Test Firebase connection
-        const testDoc = await db.collection('health_checks').add({
+        // Test Firebase auth
+        await db.collection('health_checks').add({
             timestamp: admin.firestore.FieldValue.serverTimestamp(),
             status: 'healthy'
         });
-        
-        console.log('✅ Health check: Firebase connection working');
-        
-        res.status(200).json({ 
-            status: 'OK', 
-            timestamp: new Date().toISOString(),
-            message: 'Server and Firebase both healthy',
+
+        res.status(200).json({
+            status: 'OK',
             firebase: 'connected',
-            testDocId: testDoc.id
+            timestamp: new Date().toISOString(),
+            message: 'All systems operational'
         });
         
+        console.log('✅ Health check passed');
+
     } catch (error) {
-        console.error('❌ Health check: Firebase connection failed:', error.message);
+        console.error('❌ Health check failed:', error.message);
         
-        res.status(500).json({ 
-            status: 'ERROR', 
-            timestamp: new Date().toISOString(),
-            message: 'Server running but Firebase failed',
+        res.status(500).json({
+            status: 'ERROR',
             firebase: 'disconnected',
-            error: error.message
+            error: error.message,
+            code: error.code,
+            timestamp: new Date().toISOString()
         });
     }
 });
 
-// Service account debug endpoint
-app.get('/debug/auth', (req, res) => {
+// Debug endpoint to check environment variable
+app.get('/debug/env', (req, res) => {
     try {
-        const serviceAccount = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+        const hasEnvVar = !!process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+        const envVarLength = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON?.length || 0;
+        const envVarPreview = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON?.substring(0, 100) || 'NOT SET';
         
+        let parsedOk = false;
+        let serviceAccount = null;
+        
+        try {
+            serviceAccount = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON || '{}');
+            parsedOk = true;
+        } catch (parseError) {
+            parsedOk = false;
+        }
+
         res.json({
-            projectId: serviceAccount.project_id,
-            clientEmail: serviceAccount.client_email,
-            privateKeyId: serviceAccount.private_key_id,
-            hasPrivateKey: !!serviceAccount.private_key,
-            privateKeyPreview: serviceAccount.private_key ? 
-                serviceAccount.private_key.substring(0, 50) + "..." : "MISSING"
+            hasEnvironmentVariable: hasEnvVar,
+            environmentVariableLength: envVarLength,
+            environmentVariablePreview: envVarPreview,
+            jsonParseSuccess: parsedOk,
+            projectId: serviceAccount?.project_id || 'PARSE_FAILED',
+            clientEmail: serviceAccount?.client_email || 'PARSE_FAILED',
+            hasPrivateKey: !!(serviceAccount?.private_key),
+            privateKeyLength: serviceAccount?.private_key?.length || 0
         });
+        
     } catch (error) {
         res.status(500).json({
-            error: "Failed to parse service account",
+            error: 'Debug check failed',
             message: error.message
         });
     }
@@ -261,23 +302,26 @@ app.get('/debug/auth', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 
-// Start server with connection test
-console.log('🚀 Starting PayHero Callback Server...');
-testFirebaseConnection().then(() => {
-    app.listen(PORT, () => {
-        console.log(`\n✅ Server running on port ${PORT}`);
-        console.log('📍 Available endpoints:');
-        console.log('- POST /payhero/callback');
-        console.log('- GET /health');
-        console.log('- GET /debug/auth');
-        console.log('\n🎯 Server ready for PayHero callbacks!');
-    });
+// Start server with comprehensive testing
+console.log('🚀 Starting PayHero Server with Enhanced Diagnostics...\n');
+
+testFirebaseConnection().then((success) => {
+    if (success) {
+        app.listen(PORT, () => {
+            console.log(`\n🎯 Server successfully started on port ${PORT}`);
+            console.log('🔗 Test endpoints:');
+            console.log(`- Health: https://payhero-server.onrender.com/health`);
+            console.log(`- Debug:  https://payhero-server.onrender.com/debug/env`);
+            console.log('\n✅ Server ready for PayHero callbacks!');
+        });
+    } else {
+        console.log('\n⚠️  Starting server despite Firebase issues (for debugging)...');
+        app.listen(PORT, () => {
+            console.log(`\n🔧 Server running on port ${PORT} (Firebase auth failed)`);
+            console.log('🔗 Debug endpoints available for troubleshooting');
+        });
+    }
 }).catch((error) => {
-    console.error("\n❌ Server startup failed:", error.message);
-    
-    // Still start the server even if Firebase fails (for debugging)
-    app.listen(PORT, () => {
-        console.log(`\n⚠️  Server running on port ${PORT} (Firebase connection failed)`);
-        console.log('🔧 Use /debug/auth and /health endpoints to troubleshoot');
-    });
+    console.error('❌ Server startup error:', error);
+    process.exit(1);
 });
