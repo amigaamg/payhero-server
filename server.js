@@ -4,26 +4,18 @@ const bodyParser = require('body-parser');
 const cors = require('cors');
 require('dotenv').config();
 
-// Firebase Admin setup
+// Firebase Admin setup using environment variable
 const admin = require('firebase-admin');
 
 if (!process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
-  console.error("ERROR: Environment variable GOOGLE_APPLICATION_CREDENTIALS_JSON is missing!");
-  process.exit(1);
+    console.error("ERROR: Environment variable GOOGLE_APPLICATION_CREDENTIALS_JSON is missing!");
+    process.exit(1);
 }
 
-// Parse service account JSON from env variable
-let serviceAccount;
-try {
-  serviceAccount = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
-} catch (err) {
-  console.error("ERROR: Failed to parse Firebase credentials JSON:", err);
-  process.exit(1);
-}
+const serviceAccount = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
 
-// Initialize Firebase Admin
 admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
+    credential: admin.credential.cert(serviceAccount)
 });
 
 const db = admin.firestore();
@@ -34,51 +26,128 @@ app.use(bodyParser.json());
 
 // PayHero callback endpoint
 app.post('/payhero/callback', async (req, res) => {
-  const data = req.body;
-  console.log('Incoming PayHero Callback:', JSON.stringify(data, null, 2));
+    const data = req.body;
+    console.log('Incoming PayHero Callback:', JSON.stringify(data, null, 2));
 
-  try {
-    // Access nested response object if exists
-    const response = data.response || {};
+    try {
+        // Extract data with proper fallbacks
+        const response = data.response || data;
+        const statusCode = response.ResultCode ?? data.ResultCode ?? data.resultCode;
+        const transCode = response.MpesaReceiptNumber ?? response.CheckoutRequestID ?? data.MpesaReceiptNumber ?? data.CheckoutRequestID ?? 'NO-CODE';
+        const amount = response.Amount ?? data.Amount ?? data.amount ?? 0;
+        const phone = response.Phone ?? response.MSISDN ?? data.Phone ?? data.MSISDN ?? 'UNKNOWN';
+        const reference = response.ExternalReference ?? data.ExternalReference ?? data.external_reference ?? response.CheckoutRequestID ?? data.CheckoutRequestID;
 
-    const statusCode = response.ResultCode ?? response.resultCode ?? 1; // default fail
-    const transCode = response.MpesaReceiptNumber ?? response.CheckoutRequestID ?? 'NO-CODE';
-    const amount = response.Amount ?? response.amount ?? 0;
-    const phone = response.MSISDN ?? response.Phone ?? 'UNKNOWN';
+        console.log('Extracted values:', {
+            statusCode,
+            transCode,
+            amount,
+            phone,
+            reference
+        });
 
-    // Use external reference or fallback for document ID
-    let reference = response.ExternalReference ??
-                    response.external_reference ??
-                    response.CheckoutRequestID ??
-                    `FALLBACK_${Date.now()}`;
+        // Validate that we have a valid reference
+        if (!reference || reference.trim() === '') {
+            console.error('ERROR: No valid reference found in callback data');
+            // Generate a fallback reference using timestamp and phone
+            const fallbackRef = `FALLBACK-${Date.now()}-${phone.slice(-4)}`;
+            console.log(`Using fallback reference: ${fallbackRef}`);
+        }
 
-    // Remove invalid characters from document ID
-    reference = reference.toString().replace(/[^a-zA-Z0-9_-]/g, '') || `INVALID_${Date.now()}`;
+        // Use the reference or fallback
+        const documentId = (reference && reference.trim() !== '') ? reference : `FALLBACK-${Date.now()}-${phone.slice(-4)}`;
 
-    // Payment record
-    const paymentRecord = {
-      transCode,
-      amount,
-      phone,
-      status: statusCode === 0 ? 'success' : 'failed',
-      callbackData: data,
-      timestamp: admin.firestore.FieldValue.serverTimestamp()
-    };
+        const paymentRecord = {
+            transCode,
+            amount: parseFloat(amount),
+            phone,
+            status: statusCode === 0 ? 'success' : 'failed',
+            callbackData: data,
+            timestamp: admin.firestore.FieldValue.serverTimestamp(),
+            documentId, // Store the document ID for reference
+            resultCode: statusCode,
+            resultDesc: response.ResultDesc || data.ResultDesc || 'No description'
+        };
 
-    // Save to Firestore under collection "tests"
-    await db.collection('tests').doc(reference).set(paymentRecord);
+        console.log(`Saving to Firebase with document ID: ${documentId}`);
 
-    console.log(`Payment recorded: ${statusCode === 0 ? 'SUCCESS' : 'FAILED'} - ${transCode}`);
+        // Save in Firebase using the document ID
+        await db.collection('tests').doc(documentId).set(paymentRecord, { merge: true });
 
-    res.status(200).send('Received');
-  } catch (err) {
-    console.error("Error saving payment to Firebase:", err);
-    res.status(500).send('Server error');
-  }
+        console.log(`Payment recorded successfully: ${statusCode === 0 ? 'SUCCESS' : 'FAILED'} - ${transCode}`);
+        console.log(`Document saved with ID: ${documentId}`);
+
+        res.status(200).json({
+            success: true,
+            message: 'Callback processed successfully',
+            documentId: documentId
+        });
+
+    } catch (err) {
+        console.error("Error saving payment to Firebase:", err);
+        console.error("Full error details:", err.stack);
+        
+        // Try to save error information for debugging
+        try {
+            const errorRecord = {
+                error: err.message,
+                callbackData: data,
+                timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                errorType: 'callback_processing_error'
+            };
+            
+            await db.collection('errors').add(errorRecord);
+            console.log('Error record saved to errors collection');
+        } catch (errorSaveErr) {
+            console.error('Failed to save error record:', errorSaveErr);
+        }
+        
+        res.status(500).json({
+            success: false,
+            message: 'Server error processing callback'
+        });
+    }
 });
 
-// Optional: simple health check
-app.get('/', (req, res) => res.send('PayHero server is running!'));
+// Health check endpoint
+app.get('/health', (req, res) => {
+    res.status(200).json({ 
+        status: 'OK', 
+        timestamp: new Date().toISOString(),
+        message: 'PayHero callback server is running'
+    });
+});
+
+// Test endpoint to manually create a document (for debugging)
+app.post('/test/create-doc', async (req, res) => {
+    try {
+        const testRef = `TEST-${Date.now()}`;
+        const testDoc = {
+            test: true,
+            timestamp: admin.firestore.FieldValue.serverTimestamp(),
+            message: 'Test document creation'
+        };
+        
+        await db.collection('tests').doc(testRef).set(testDoc);
+        res.status(200).json({ 
+            success: true, 
+            documentId: testRef,
+            message: 'Test document created successfully'
+        });
+    } catch (err) {
+        console.error('Test document creation failed:', err);
+        res.status(500).json({ 
+            success: false, 
+            error: err.message 
+        });
+    }
+});
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`PayHero server running on port ${PORT}`));
+app.listen(PORT, () => {
+    console.log(`PayHero server running on port ${PORT}`);
+    console.log('Available endpoints:');
+    console.log('- POST /payhero/callback (PayHero callback handler)');
+    console.log('- GET /health (Health check)');
+    console.log('- POST /test/create-doc (Test document creation)');
+});
