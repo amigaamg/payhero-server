@@ -30,11 +30,11 @@ app.post('/payhero/callback', async (req, res) => {
     console.log('Incoming PayHero Callback:', JSON.stringify(data, null, 2));
 
     try {
-        const statusCode = data.ResultCode ?? data.resultCode;
-        const transCode = data.MpesaReceiptNumber ?? data.CheckoutRequestID ?? 'NO-CODE';
-        const amount = data.Amount ?? data.amount ?? 0;
-        const phone = data.MSISDN ?? data.Phone ?? 'UNKNOWN';
-        const reference = data.ExternalReference ?? data.external_reference ?? data.CheckoutRequestID;
+        const statusCode = data.ResultCode ?? data.resultCode ?? 1;
+        const transCode = (data.MpesaReceiptNumber ?? data.CheckoutRequestID ?? `NO-CODE-${Date.now()}`).toString();
+        const amount = Number(data.Amount ?? data.amount ?? 0);
+        const phone = (data.MSISDN ?? data.Phone ?? 'UNKNOWN').toString();
+        const reference = (data.ExternalReference ?? data.external_reference ?? data.CheckoutRequestID ?? `auto-${Date.now()}`).toString();
 
         const paymentRecord = {
             transCode,
@@ -45,7 +45,7 @@ app.post('/payhero/callback', async (req, res) => {
             timestamp: new Date()
         };
 
-        // Save in Firebase using external_reference as document ID
+        // Save in Firestore collection 'tests'
         await db.collection('tests').doc(reference).set(paymentRecord, { merge: true });
 
         console.log(`Payment recorded: ${statusCode === 0 ? 'SUCCESS' : 'FAILED'} - ${transCode}`);
