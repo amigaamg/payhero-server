@@ -4,7 +4,7 @@ const bodyParser = require('body-parser');
 const cors = require('cors');
 require('dotenv').config();
 
-// Firebase Admin setup using environment variable
+// Firebase Admin setup
 const admin = require('firebase-admin');
 
 if (!process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
@@ -24,17 +24,29 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-// PayHero callback endpoint
+// Fixed PayHero callback endpoint
 app.post('/payhero/callback', async (req, res) => {
     const data = req.body;
     console.log('Incoming PayHero Callback:', JSON.stringify(data, null, 2));
 
     try {
-        const statusCode = data.ResultCode ?? data.resultCode ?? 1;
-        const transCode = (data.MpesaReceiptNumber ?? data.CheckoutRequestID ?? `NO-CODE-${Date.now()}`).toString();
-        const amount = Number(data.Amount ?? data.amount ?? 0);
-        const phone = (data.MSISDN ?? data.Phone ?? 'UNKNOWN').toString();
-        const reference = (data.ExternalReference ?? data.external_reference ?? data.CheckoutRequestID ?? `auto-${Date.now()}`).toString();
+        // FIX 1: Access nested response object
+        const response = data.response || {};
+        
+        // FIX 2: Get values from response object
+        const statusCode = response.ResultCode ?? response.resultCode;
+        const transCode = response.MpesaReceiptNumber ?? response.CheckoutRequestID ?? 'NO-CODE';
+        const amount = response.Amount ?? response.amount ?? 0;
+        const phone = response.MSISDN ?? response.Phone ?? 'UNKNOWN';
+        
+        // FIX 3: Ensure reference is always a valid string
+        let reference = response.ExternalReference || 
+                      response.external_reference || 
+                      response.CheckoutRequestID ||
+                      `FALLBACK_${Date.now()}`;  // Fallback if all missing
+        
+        // FIX 4: Remove invalid characters from reference
+        reference = reference.toString().replace(/[^a-zA-Z0-9_-]/g, '');
 
         const paymentRecord = {
             transCode,
@@ -42,12 +54,16 @@ app.post('/payhero/callback', async (req, res) => {
             phone,
             status: statusCode === 0 ? 'success' : 'failed',
             callbackData: data,
-            timestamp: new Date()
+            timestamp: admin.firestore.FieldValue.serverTimestamp()  // Better timestamp
         };
 
-        // Save in Firestore collection 'tests'
-        await db.collection('tests').doc(reference).set(paymentRecord, { merge: true });
+        // FIX 5: Add validation before saving
+        if (!reference || reference.trim() === '') {
+            reference = `INVALID_REF_${Date.now()}`;
+        }
 
+        console.log(`Saving to Firestore with reference: ${reference}`);
+        await db.collection('tests').doc(reference).set(paymentRecord);
         console.log(`Payment recorded: ${statusCode === 0 ? 'SUCCESS' : 'FAILED'} - ${transCode}`);
 
         res.status(200).send('Received');
