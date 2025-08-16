@@ -8,14 +8,22 @@ require('dotenv').config();
 const admin = require('firebase-admin');
 
 if (!process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
-    console.error("ERROR: Environment variable GOOGLE_APPLICATION_CREDENTIALS_JSON is missing!");
-    process.exit(1);
+  console.error("ERROR: Environment variable GOOGLE_APPLICATION_CREDENTIALS_JSON is missing!");
+  process.exit(1);
 }
 
-const serviceAccount = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+// Parse service account JSON from env variable
+let serviceAccount;
+try {
+  serviceAccount = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+} catch (err) {
+  console.error("ERROR: Failed to parse Firebase credentials JSON:", err);
+  process.exit(1);
+}
 
+// Initialize Firebase Admin
 admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
+  credential: admin.credential.cert(serviceAccount)
 });
 
 const db = admin.firestore();
@@ -24,54 +32,53 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-// Fixed PayHero callback endpoint
+// PayHero callback endpoint
 app.post('/payhero/callback', async (req, res) => {
-    const data = req.body;
-    console.log('Incoming PayHero Callback:', JSON.stringify(data, null, 2));
+  const data = req.body;
+  console.log('Incoming PayHero Callback:', JSON.stringify(data, null, 2));
 
-    try {
-        // FIX 1: Access nested response object
-        const response = data.response || {};
-        
-        // FIX 2: Get values from response object
-        const statusCode = response.ResultCode ?? response.resultCode;
-        const transCode = response.MpesaReceiptNumber ?? response.CheckoutRequestID ?? 'NO-CODE';
-        const amount = response.Amount ?? response.amount ?? 0;
-        const phone = response.MSISDN ?? response.Phone ?? 'UNKNOWN';
-        
-        // FIX 3: Ensure reference is always a valid string
-        let reference = response.ExternalReference || 
-                      response.external_reference || 
-                      response.CheckoutRequestID ||
-                      `FALLBACK_${Date.now()}`;  // Fallback if all missing
-        
-        // FIX 4: Remove invalid characters from reference
-        reference = reference.toString().replace(/[^a-zA-Z0-9_-]/g, '');
+  try {
+    // Access nested response object if exists
+    const response = data.response || {};
 
-        const paymentRecord = {
-            transCode,
-            amount,
-            phone,
-            status: statusCode === 0 ? 'success' : 'failed',
-            callbackData: data,
-            timestamp: admin.firestore.FieldValue.serverTimestamp()  // Better timestamp
-        };
+    const statusCode = response.ResultCode ?? response.resultCode ?? 1; // default fail
+    const transCode = response.MpesaReceiptNumber ?? response.CheckoutRequestID ?? 'NO-CODE';
+    const amount = response.Amount ?? response.amount ?? 0;
+    const phone = response.MSISDN ?? response.Phone ?? 'UNKNOWN';
 
-        // FIX 5: Add validation before saving
-        if (!reference || reference.trim() === '') {
-            reference = `INVALID_REF_${Date.now()}`;
-        }
+    // Use external reference or fallback for document ID
+    let reference = response.ExternalReference ??
+                    response.external_reference ??
+                    response.CheckoutRequestID ??
+                    `FALLBACK_${Date.now()}`;
 
-        console.log(`Saving to Firestore with reference: ${reference}`);
-        await db.collection('tests').doc(reference).set(paymentRecord);
-        console.log(`Payment recorded: ${statusCode === 0 ? 'SUCCESS' : 'FAILED'} - ${transCode}`);
+    // Remove invalid characters from document ID
+    reference = reference.toString().replace(/[^a-zA-Z0-9_-]/g, '') || `INVALID_${Date.now()}`;
 
-        res.status(200).send('Received');
-    } catch (err) {
-        console.error("Error saving payment to Firebase:", err);
-        res.status(500).send('Server error');
-    }
+    // Payment record
+    const paymentRecord = {
+      transCode,
+      amount,
+      phone,
+      status: statusCode === 0 ? 'success' : 'failed',
+      callbackData: data,
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    };
+
+    // Save to Firestore under collection "tests"
+    await db.collection('tests').doc(reference).set(paymentRecord);
+
+    console.log(`Payment recorded: ${statusCode === 0 ? 'SUCCESS' : 'FAILED'} - ${transCode}`);
+
+    res.status(200).send('Received');
+  } catch (err) {
+    console.error("Error saving payment to Firebase:", err);
+    res.status(500).send('Server error');
+  }
 });
+
+// Optional: simple health check
+app.get('/', (req, res) => res.send('PayHero server is running!'));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`PayHero server running on port ${PORT}`));
