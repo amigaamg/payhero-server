@@ -1,103 +1,64 @@
 // server.js
-const express = require('express');
-const bodyParser = require('body-parser');
-const cors = require('cors');
-require('dotenv').config();
+const express = require("express");
+const admin = require("firebase-admin");
+const cors = require("cors");
 
-// Firebase Admin setup using environment variable
-const admin = require('firebase-admin');
-
-if (!process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
-    console.error("ERROR: Environment variable GOOGLE_APPLICATION_CREDENTIALS_JSON is missing!");
-    process.exit(1);
-}
-
-const serviceAccount = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+// Load Firebase service account from Render environment variable
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 
 admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
+  credential: admin.credential.cert(serviceAccount),
+  databaseURL: "https://bynexproject.firebaseio.com"
 });
 
 const db = admin.firestore();
-
 const app = express();
-app.use(cors());
-app.use(bodyParser.json());
-
-// PayHero callback endpoint
-app.post('/payhero/callback', async (req, res) => {
-    const data = req.body;
-    console.log('Incoming PayHero Callback:', JSON.stringify(data, null, 2));
-
-    try {
-        // Handle both direct callback and nested response structure
-        const callbackData = data.response || data;
-        
-        const statusCode = callbackData.ResultCode ?? callbackData.resultCode ?? data.ResultCode ?? data.resultCode;
-        const transCode = callbackData.MpesaReceiptNumber ?? callbackData.CheckoutRequestID ?? data.MpesaReceiptNumber ?? data.CheckoutRequestID ?? 'NO-CODE';
-        const amount = callbackData.Amount ?? callbackData.amount ?? data.Amount ?? data.amount ?? 0;
-        const phone = callbackData.MSISDN ?? callbackData.Phone ?? data.MSISDN ?? data.Phone ?? 'UNKNOWN';
-        
-        // Try multiple ways to get the reference
-        let reference = callbackData.ExternalReference ?? callbackData.external_reference ?? 
-                       data.ExternalReference ?? data.external_reference ?? 
-                       callbackData.CheckoutRequestID ?? data.CheckoutRequestID;
-
-        // Ensure reference is valid and not empty
-        if (!reference || reference.trim() === '') {
-            reference = `FALLBACK-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-            console.warn('No valid reference found, using fallback:', reference);
-        }
-
-        console.log('Extracted values:', {
-            statusCode,
-            transCode, 
-            amount,
-            phone,
-            reference
-        });
-
-        const paymentRecord = {
-            transCode,
-            amount: Number(amount),
-            phone,
-            status: statusCode === 0 ? 'success' : 'failed',
-            callbackData: data, // Store the full original callback
-            timestamp: admin.firestore.FieldValue.serverTimestamp(),
-            reference: reference
-        };
-
-        // Save in Firebase using reference as document ID
-        await db.collection('tests').doc(reference).set(paymentRecord, { merge: true });
-
-        console.log(`Payment recorded: ${statusCode === 0 ? 'SUCCESS' : 'FAILED'} - ${transCode} - Doc ID: ${reference}`);
-
-        res.status(200).send('Received');
-    } catch (err) {
-        console.error("Error saving payment to Firebase:", err);
-        console.error("Request body:", JSON.stringify(data, null, 2));
-        res.status(500).send('Server error');
-    }
-});
-
-// Add a test endpoint to check if server is working
-app.get('/test', (req, res) => {
-    res.json({ message: 'PayHero server is running!', timestamp: new Date() });
-});
-
-// Add an endpoint to manually create the tests collection
-app.post('/create-collection', async (req, res) => {
-    try {
-        await db.collection('tests').doc('init').set({
-            message: 'Collection initialized',
-            timestamp: admin.firestore.FieldValue.serverTimestamp()
-        });
-        res.json({ success: true, message: 'Tests collection created' });
-    } catch (err) {
-        console.error('Error creating collection:', err);
-        res.status(500).json({ error: err.message });
-    }
-});
-
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`PayHero server running on port ${PORT}`));
+
+// Middlewares
+app.use(cors());
+app.use(express.json()); // Parse JSON body
+
+// 🔹 Callback endpoint for PayHero STK Push
+app.post("/callback", async (req, res) => {
+  try {
+    // PayHero usually sends data in req.body
+    const { Amount, MpesaReceiptNumber, Phone, ExternalReference, Status } =
+      req.body;
+
+    // Build transaction object
+    const transactionData = {
+      Amount: Amount || 0,
+      MpesaReceiptNumber: MpesaReceiptNumber || "",
+      Phone: Phone || "",
+      ExternalReference: ExternalReference || `REF-${Date.now()}`,
+      Status: Status || "Failed",
+      Timestamp: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    // Save to Firestore under "tests" collection
+    const docRef = await db.collection("tests").add(transactionData);
+
+    console.log("✅ Transaction saved with ID:", docRef.id);
+
+    // Respond success to PayHero
+    res.status(200).json({
+      success: true,
+      message: "Transaction received and saved",
+      docId: docRef.id,
+    });
+  } catch (error) {
+    console.error("❌ Error saving transaction:", error);
+    res.status(500).json({ success: false, error: "Failed to save transaction" });
+  }
+});
+
+// Root route
+app.get("/", (req, res) => {
+  res.send("PayHero Callback Server is running ✅");
+});
+
+// Start server
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
