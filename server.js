@@ -1,64 +1,41 @@
-// server.js
 const express = require("express");
+const bodyParser = require("body-parser");
 const admin = require("firebase-admin");
-const cors = require("cors");
 
-// Load Firebase service account from Render environment variable
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+const app = express();
+app.use(bodyParser.json());
 
+// Initialize Firebase with environment variables
 admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-  databaseURL: "https://bynexproject.firebaseio.com"
+  credential: admin.credential.cert({
+    projectId: process.env.FIREBASE_PROJECT_ID,
+    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+    privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
+  })
 });
 
 const db = admin.firestore();
-const app = express();
-const PORT = process.env.PORT || 3000;
 
-// Middlewares
-app.use(cors());
-app.use(express.json()); // Parse JSON body
-
-// 🔹 Callback endpoint for PayHero STK Push
+// Callback route for PayHero
 app.post("/callback", async (req, res) => {
   try {
-    // PayHero usually sends data in req.body
-    const { Amount, MpesaReceiptNumber, Phone, ExternalReference, Status } =
-      req.body;
-
-    // Build transaction object
-    const transactionData = {
-      Amount: Amount || 0,
-      MpesaReceiptNumber: MpesaReceiptNumber || "",
-      Phone: Phone || "",
-      ExternalReference: ExternalReference || `REF-${Date.now()}`,
-      Status: Status || "Failed",
-      Timestamp: admin.firestore.FieldValue.serverTimestamp(),
+    const transaction = {
+      Amount: req.body.Amount || 0,
+      MpesaReceiptNumber: req.body.MpesaReceiptNumber || "",
+      Phone: req.body.Phone || "",
+      ExternalReference: req.body.ExternalReference || "",
+      Status: req.body.Status || "Failed",
+      Timestamp: admin.firestore.FieldValue.serverTimestamp()
     };
 
-    // Save to Firestore under "tests" collection
-    const docRef = await db.collection("tests").add(transactionData);
+    await db.collection("tests").add(transaction);
 
-    console.log("✅ Transaction saved with ID:", docRef.id);
-
-    // Respond success to PayHero
-    res.status(200).json({
-      success: true,
-      message: "Transaction received and saved",
-      docId: docRef.id,
-    });
+    res.status(200).send({ success: true });
   } catch (error) {
-    console.error("❌ Error saving transaction:", error);
-    res.status(500).json({ success: false, error: "Failed to save transaction" });
+    console.error("Error saving transaction:", error);
+    res.status(500).send({ success: false, error: error.message });
   }
 });
 
-// Root route
-app.get("/", (req, res) => {
-  res.send("PayHero Callback Server is running ✅");
-});
-
-// Start server
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
